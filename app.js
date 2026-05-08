@@ -5,6 +5,7 @@
   "#6": 19.1,
   "#7": 22.2,
   "#8": 25.4,
+  "#9": 28.7,
   "#10": 32.3,
   "#11": 35.8
 };
@@ -16,8 +17,21 @@ const barColors = {
   "#6": "#6650a4",
   "#7": "#7b5d39",
   "#8": "#c93434",
+  "#9": "#0f766e",
   "#10": "#32485d",
   "#11": "#111827"
+};
+
+const standardA1 = {
+  "#3": 15,
+  "#4": 20,
+  "#5": 25,
+  "#6": 30,
+  "#7": 35,
+  "#8": 40,
+  "#9": 50,
+  "#10": 55,
+  "#11": 60
 };
 
 const defaults = {
@@ -40,7 +54,10 @@ const defaults = {
       ldhMultiplier: 0.24,
       weightFormula: "0.006165 * d^2"
     },
-    lapOverrides: {}
+    activeLapProfile: "default",
+    lapProfiles: {
+      default: { name: "系統預設 (規範公式)", data: {} }
+    }
   },
   beam: {
     code: "B1",
@@ -106,7 +123,6 @@ const defaults = {
         connectionMode: "lap",
         lapPointRatio: 0.5,
         topLapPointRatio: 0.5,
-        bottomLapPointRatio: 0.15,
         topLayers: [
           { barNo: "#10", left: 5, mid: 3, right: 5, leftCutoff: 285, rightCutoff: 285 },
           { barNo: "#10", left: 2, mid: 0, right: 2, leftCutoff: 200, rightCutoff: 200 },
@@ -188,6 +204,25 @@ function normalizeProject(raw) {
   Object.assign(next, raw);
   next.params = { ...clone(defaults.params), ...(raw.params || {}) };
   next.params.formula = { ...clone(defaults.params.formula), ...((raw.params || {}).formula || {}) };
+  next.params.activeLapProfile = (raw.params && raw.params.activeLapProfile) || "default";
+  next.params.lapProfiles = (raw.params && raw.params.lapProfiles) || {
+    default: { name: "系統預設 (規範公式)", data: {} }
+  };
+  if (raw.params && raw.params.lapOverrides && !raw.params.lapProfiles) {
+    const migrated = {};
+    Object.entries(raw.params.lapOverrides).forEach(([key, value]) => {
+      const [barNo, lapClass] = key.split("-");
+      if (barNo && lapClass) {
+        migrated[`${barNo}-${lapClass}-normal`] = value;
+        migrated[`${barNo}-${lapClass}-top`] = value;
+      }
+    });
+    next.params.lapProfiles.default.data = migrated;
+  }
+  if (!next.params.lapProfiles[next.params.activeLapProfile]) {
+    next.params.activeLapProfile = "default";
+  }
+  delete next.params.lapOverrides;
   next.beam = { ...clone(defaults.beam), ...(raw.beam || {}) };
   next.column = { ...clone(defaults.column), ...(raw.column || {}) };
   next.wall = { ...clone(defaults.wall), ...(raw.wall || {}) };
@@ -226,10 +261,20 @@ function normalizeBenchBeam(beam) {
   beam.lapClass = beam.lapClass || sample.lapClass;
   beam.connectionMode = beam.connectionMode || sample.connectionMode;
   beam.lapPointRatio = number(beam.lapPointRatio, sample.lapPointRatio);
-  beam.topLapPointRatio = number(beam.topLapPointRatio, 0.5);
-  beam.bottomLapPointRatio = number(beam.bottomLapPointRatio, 0.15);
   beam.topLayers = normalizeLayers(beam.topLayers, sample.topLayers);
   beam.bottomLayers = normalizeLayers(beam.bottomLayers, sample.bottomLayers);
+  const h = number(beam.depth, sample.depth);
+  const l = Math.max(1, number(beam.span, sample.span));
+  const bottomFirst = beam.bottomLayers[0] || sample.bottomLayers[0];
+  const bottomLapHalf = beam.connectionMode === "lap"
+    ? calcLap(bottomFirst.barNo || sample.bottomLayers[0].barNo, beam.lapClass, false) / 2
+    : 0;
+  const twoHRatio = Math.min(0.45, ((2 * h) + bottomLapHalf + 10) / l);
+  const hasBottomLap = beam.bottomLapPointRatio !== undefined
+    && beam.bottomLapPointRatio !== null
+    && String(beam.bottomLapPointRatio).trim() !== "";
+  beam.topLapPointRatio = number(beam.topLapPointRatio, 0.5);
+  beam.bottomLapPointRatio = hasBottomLap ? number(beam.bottomLapPointRatio, twoHRatio) : twoHRatio;
   beam.stirrups = { ...sample.stirrups, ...(beam.stirrups || {}) };
   beam.skin = { ...sample.skin, ...(beam.skin || {}) };
   return beam;
@@ -279,7 +324,7 @@ function calcHookDevelopment(barNo, isTop = false) {
   const fy = number(p.fy, 420);
   const fc = Math.max(14, number(p.fc, 28));
   const ldh = (number(f.ldhMultiplier, 0.24) * fy / Math.sqrt(fc)) * db;
-  const topFactor = isTop ? number(f.alpha, 1.3) : 1;
+  const topFactor = isTop ? number(p.topFactor, number(f.alpha, 1.3)) : 1;
   return roundUpCm(Math.max(15, 8 * db, ldh * topFactor));
 }
 
@@ -296,12 +341,18 @@ function evaluateWeightFormula(d) {
   }
 }
 
-function calcLap(barNo, lapClass, isTop) {
-  const key = `${barNo}-${lapClass}`;
-  const override = number(state.params.lapOverrides[key], 0);
-  if (override > 0) return roundUpCm(override);
+function getFormulaLap(barNo, lapClass, isTop) {
   const ld = calcDevelopment(barNo, isTop);
   return roundUpCm(ld * (lapClass === "B" ? number(state.params.classBFactor, 1.3) : 1));
+}
+
+function calcLap(barNo, lapClass, isTop) {
+  const profileId = state.params.activeLapProfile || "default";
+  const profileData = state.params.lapProfiles?.[profileId]?.data || {};
+  const key = `${barNo}-${lapClass}-${isTop ? "top" : "normal"}`;
+  const override = number(profileData[key], 0);
+  if (override > 0) return override;
+  return getFormulaLap(barNo, lapClass, isTop);
 }
 
 function legalZone(component, data) {
@@ -467,12 +518,12 @@ function calculateBeamBench() {
     const rightColumn = bench.columns[bench.sequence[i + 1]];
     const beam = bench.beams[beamId];
     if (!beam) {
-      warnings.push(`璇挾 ${beamId} 撠撱箇?`);
+      warnings.push(`梁段 ${beamId} 找不到資料`);
       continue;
     }
     normalizeBenchBeam(beam);
     const beamCheck = validateBenchBeam(beam);
-    warnings.push(...beamCheck.warnings.map((text) => `${beamId}嚗?{text}`));
+    warnings.push(...beamCheck.warnings.map((text) => `${beamId}: ${text}`));
     if (!beamCheck.ok) continue;
     bars.push(...calculateBenchBeamBars(beam, leftColumn, rightColumn, i));
   }
@@ -539,8 +590,8 @@ function calculateLayerBars(beam, layer, layerNo, face, span, leftColumn, rightC
       const leftLen = roundUpCm(span * ratio + leftAnchor + ls / 2);
       const rightLen = roundUpCm(span * (1 - ratio) + rightAnchor + ls / 2);
       [
-        row(`${beam.id}-${face}${layerNo}L`, `${faceText}第${layerNo}排左段搭接筋`, layer.barNo, throughCount, leftLen, `Ldh ${leftAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`),
-        row(`${beam.id}-${face}${layerNo}R`, `${faceText}第${layerNo}排右段搭接筋`, layer.barNo, throughCount, rightLen, `Ldh ${rightAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`)
+        row(`${beam.id}-${face}${layerNo}L`, `${faceText}第${layerNo}排左段搭接筋`, layer.barNo, throughCount, leftLen, `錨定(Ldh+A1) ${leftAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`),
+        row(`${beam.id}-${face}${layerNo}R`, `${faceText}第${layerNo}排右段搭接筋`, layer.barNo, throughCount, rightLen, `錨定(Ldh+A1) ${rightAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`)
       ].forEach((item) => {
         item.beamId = beam.id;
         item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
@@ -548,7 +599,7 @@ function calculateLayerBars(beam, layer, layerNo, face, span, leftColumn, rightC
       });
     } else {
       const throughLen = roundUpCm(span + leftAnchor + rightAnchor);
-      const item = row(`${beam.id}-${face}${layerNo}`, `${faceText}第${layerNo}排續接筋`, layer.barNo, throughCount, throughLen, `左右 Ldh ${leftAnchor}/${rightAnchor}cm`);
+      const item = row(`${beam.id}-${face}${layerNo}`, `${faceText}第${layerNo}排續接筋`, layer.barNo, throughCount, throughLen, `左右錨定(Ldh+A1) ${leftAnchor}/${rightAnchor}cm`);
       item.beamId = beam.id;
       item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
       bars.push(item);
@@ -556,14 +607,14 @@ function calculateLayerBars(beam, layer, layerNo, face, span, leftColumn, rightC
   }
   if (leftExtra > 0) {
     const len = roundUpCm(leftAnchor + number(layer.leftCutoff, span / 3));
-    const item = row(`${beam.id}-${face}L${layerNo}`, `${faceText}第${layerNo}排左端加伸筋`, layer.barNo, leftExtra, len, `Ldh ${leftAnchor}cm + 自左柱邊延伸 ${number(layer.leftCutoff, span / 3)}cm`);
+    const item = row(`${beam.id}-${face}L${layerNo}`, `${faceText}第${layerNo}排左端加伸筋`, layer.barNo, leftExtra, len, `錨定(Ldh+A1) ${leftAnchor}cm + 自左柱邊延伸 ${number(layer.leftCutoff, span / 3)}cm`);
     item.beamId = beam.id;
     item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
     bars.push(item);
   }
   if (rightExtra > 0) {
     const len = roundUpCm(rightAnchor + number(layer.rightCutoff, span / 3));
-    const item = row(`${beam.id}-${face}R${layerNo}`, `${faceText}第${layerNo}排右端加伸筋`, layer.barNo, rightExtra, len, `Ldh ${rightAnchor}cm + 自右柱邊延伸 ${number(layer.rightCutoff, span / 3)}cm`);
+    const item = row(`${beam.id}-${face}R${layerNo}`, `${faceText}第${layerNo}排右端加伸筋`, layer.barNo, rightExtra, len, `錨定(Ldh+A1) ${rightAnchor}cm + 自右柱邊延伸 ${number(layer.rightCutoff, span / 3)}cm`);
     item.beamId = beam.id;
     item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
     bars.push(item);
@@ -601,13 +652,13 @@ function calcStirrupLength(width, depth, cover, barNo) {
 }
 
 function hookA1Length(barNo) {
-  const db = dbCm(barNo);
-  const multiplier = (barDb[barNo] || 25.4) <= 25.4 ? 6 : 8;
-  return roundUpCm(multiplier * db);
+  return standardA1[barNo] || roundUpCm(17 * dbCm(barNo));
 }
 
 function anchorLength(beam, column, barNo, isTop = false) {
-  return calcHookDevelopment(barNo, isTop);
+  const ldh = calcHookDevelopment(barNo, isTop);
+  const a1 = hookA1Length(barNo);
+  return ldh + a1;
 }
 
 function validateBenchSequence(sequence) {
@@ -635,13 +686,25 @@ function validateBenchBeam(beam) {
   const topFirst = beam.topLayers[0];
   const bottomFirst = beam.bottomLayers[0];
   if (!topFirst.barNo || number(topFirst.left, 0) <= 0 || number(topFirst.mid, 0) <= 0 || number(topFirst.right, 0) <= 0) {
-    warnings.push("銝惜蝚砌???頛詨??椰銝剖?舀");
+    warnings.push("上層主筋資料未填寫完整");
   }
   if (!bottomFirst.barNo || number(bottomFirst.left, 0) <= 0 || number(bottomFirst.mid, 0) <= 0 || number(bottomFirst.right, 0) <= 0) {
-    warnings.push("銝惜蝚砌???頛詨??椰銝剖?舀");
+    warnings.push("下層主筋資料未填寫完整");
   }
   if (number(beam.width, 0) <= 0 || number(beam.depth, 0) <= 0 || number(beam.span, 0) <= 0) {
-    warnings.push("璇挾?頛詨瘛刻楊??撖祈?璇楛");
+    warnings.push("梁斷面尺寸或跨度不得為零");
+  }
+  if (beam.connectionMode === "lap") {
+    const h = number(beam.depth, 70);
+    const l = number(beam.span, 620);
+    const bottomLapCenter = l * number(beam.bottomLapPointRatio, 0.25);
+    const lapHalfLength = calcLap(bottomFirst.barNo, beam.lapClass, false) / 2;
+    if (bottomLapCenter - lapHalfLength < 2 * h || bottomLapCenter + lapHalfLength > l - 2 * h) {
+      warnings.push(`下層筋搭接侵入柱邊 2h(${2 * h}cm) 塑性鉸禁區`);
+    }
+    if (l < 4 * h + lapHalfLength * 2) {
+      warnings.push("短梁不具備搭接空間，建議改採續接器或一貫到底");
+    }
   }
   return { ok: warnings.length === 0, warnings };
 }
@@ -1011,6 +1074,24 @@ function bindStaticControls() {
   document.querySelector("#openLapTable").addEventListener("click", () => {
     renderLapTable();
     els.lapDialog.showModal();
+  });
+  document.querySelector("#addLapProfile")?.addEventListener("click", () => {
+    const name = prompt("請輸入新專案搭接表的名稱 (例如：A建案標準圖):", "新專案");
+    if (!name) return;
+    ensureLapProfiles();
+    const id = `proj_${Date.now()}`;
+    state.params.lapProfiles[id] = { name, data: {} };
+    state.params.activeLapProfile = id;
+    renderLapTable();
+    update();
+    logChange("搭接表", `新增並切換至：${name}`);
+  });
+  document.querySelector("#lapProfileSelect")?.addEventListener("change", (event) => {
+    ensureLapProfiles();
+    state.params.activeLapProfile = event.target.value;
+    renderLapTable();
+    update();
+    logChange("搭接表", `切換至：${state.params.lapProfiles[state.params.activeLapProfile].name}`);
   });
   els.openFormulaConfig?.addEventListener("click", () => {
     renderFormulaConfig();
@@ -1816,7 +1897,7 @@ function bind2dDrag() {
     const xEnd = 1080;
     const scale = (xEnd - xStart) / Math.max(1, totalSpan);
     const beamX0 = xStart + leftCm * scale;
-    const ratio = Math.max(0.2, Math.min(0.8, (pos.x - beamX0) / (number(beam.span, 1) * scale)));
+    const ratio = Math.max(0.05, Math.min(0.95, (pos.x - beamX0) / (number(beam.span, 1) * scale)));
     beam[activeHandle.ratioKey || "topLapPointRatio"] = Number(ratio.toFixed(3));
     update();
   });
@@ -1845,32 +1926,67 @@ function canvasPoint(canvas, event) {
 }
 
 function renderLapTable() {
-  els.lapTable.innerHTML = `
-    <div class="head">號數</div>
-    <div class="head">甲級搭接 Ls (cm)</div>
-    <div class="head">乙級搭接 Ls (cm)</div>
-  `;
+  ensureLapProfiles();
+  const lapTableBody = document.querySelector("#lapTableBody");
+  if (!lapTableBody) return;
+  lapTableBody.innerHTML = "";
+  const profileId = state.params.activeLapProfile;
+  const profileData = state.params.lapProfiles[profileId].data;
+
   Object.keys(barDb).forEach((barNo) => {
-    const name = document.createElement("div");
-    name.textContent = barNo;
-    els.lapTable.append(name);
-    ["A", "B"].forEach((grade) => {
+    const tr = document.createElement("tr");
+    const tdNo = document.createElement("td");
+    tdNo.innerHTML = `<strong style="color:${barColors[barNo]}">${barNo}</strong>`;
+    tr.append(tdNo);
+    [
+      { lapClass: "A", isTop: false, key: `${barNo}-A-normal` },
+      { lapClass: "B", isTop: false, key: `${barNo}-B-normal` },
+      { lapClass: "A", isTop: true, key: `${barNo}-A-top` },
+      { lapClass: "B", isTop: true, key: `${barNo}-B-top` }
+    ].forEach((variation) => {
+      const td = document.createElement("td");
       const input = document.createElement("input");
       input.type = "number";
-      input.min = "0";
-      input.step = "1";
-      input.placeholder = "自動";
-      input.value = state.params.lapOverrides[`${barNo}-${grade}`] || "";
-      input.addEventListener("input", () => {
-        const key = `${barNo}-${grade}`;
+      input.className = "lap-input";
+      input.placeholder = `${getFormulaLap(barNo, variation.lapClass, variation.isTop)}`;
+      input.value = profileData[variation.key] || "";
+      if (profileData[variation.key]) input.classList.add("overridden");
+      input.addEventListener("change", () => {
         const value = number(input.value, 0);
-        if (value > 0) state.params.lapOverrides[key] = value;
-        else delete state.params.lapOverrides[key];
-        logChange("專案搭接表", `${barNo} ${grade} = ${value > 0 ? `${value}cm` : "自動"}`);
+        if (value > 0) profileData[variation.key] = value;
+        else delete profileData[variation.key];
+        renderLapTable();
+        logChange("專案搭接表更新", `${barNo} ${variation.isTop ? "頂層" : "一般"} ${variation.lapClass}級 = ${value > 0 ? `${value}cm` : "恢復預設"}`);
         update();
       });
-      els.lapTable.append(input);
+      td.append(input);
+      tr.append(td);
     });
+    lapTableBody.append(tr);
+  });
+
+  const select = document.querySelector("#lapProfileSelect");
+  if (select) {
+    select.innerHTML = "";
+    Object.keys(state.params.lapProfiles).forEach((profileKey) => {
+      const option = document.createElement("option");
+      option.value = profileKey;
+      option.textContent = state.params.lapProfiles[profileKey].name;
+      select.append(option);
+    });
+    select.value = profileId;
+  }
+}
+
+function ensureLapProfiles() {
+  if (!state.params.lapProfiles) {
+    state.params.lapProfiles = { default: { name: "系統預設 (規範公式)", data: {} } };
+  }
+  if (!state.params.activeLapProfile || !state.params.lapProfiles[state.params.activeLapProfile]) {
+    state.params.activeLapProfile = "default";
+  }
+  Object.values(state.params.lapProfiles).forEach((profile) => {
+    if (!profile.data) profile.data = {};
   });
 }
 

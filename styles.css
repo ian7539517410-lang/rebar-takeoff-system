@@ -597,6 +597,41 @@ dialog::backdrop {
   font-weight: 700;
 }
 
+.lap-profile-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px dashed var(--line);
+  margin-bottom: 16px;
+}
+
+.lap-matrix-table th,
+.lap-matrix-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.lap-input {
+  width: 90%;
+  min-height: 32px;
+  padding: 4px 8px;
+  text-align: right;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.lap-input::placeholder {
+  color: #a0acb5;
+}
+
+.lap-input.overridden {
+  background-color: var(--green-soft);
+  color: var(--green);
+  font-weight: 700;
+  border-color: var(--green);
+}
+
 @media (max-width: 1180px) {
   .workspace,
   .canvas-grid,

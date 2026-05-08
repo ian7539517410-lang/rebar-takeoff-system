@@ -201,14 +201,39 @@
     </section>
   </main>
 
-  <dialog id="lapTableDialog">
+  <dialog id="lapTableDialog" class="modern-dialog">
     <form method="dialog" class="dialog-body">
       <div class="section-title">
-        <h2>專案搭接表</h2>
-        <button class="tool-button">關閉</button>
+        <h2 style="color: var(--primary);">📋 專案搭接表管理</h2>
+        <button class="tool-button">儲存並關閉</button>
       </div>
-      <p class="muted">留空代表使用動態公式。輸入值會以公分為單位覆寫指定號數的甲級或乙級搭接長度。</p>
-      <div id="lapTable" class="lap-table"></div>
+
+      <div class="lap-profile-header">
+        <label>選擇專案搭接表：
+          <select id="lapProfileSelect" style="width: 250px; display: inline-block;"></select>
+        </label>
+        <button id="addLapProfile" type="button" class="tool-button">+ 新增專案</button>
+      </div>
+
+      <p class="muted">
+        灰色數值為「規範公式」自動計算的結果。若該專案的標準圖有特殊規定，可直接於下方格內填寫。<br>
+        填入數值後會以<strong style="color: var(--green);">綠色</strong>顯示，系統算料將優先強制套用您的自訂值。
+      </p>
+
+      <div class="table-wrap" style="max-height: 400px; margin-top: 15px;">
+        <table class="lap-matrix-table">
+          <thead>
+            <tr>
+              <th style="position: sticky; top: 0; background: var(--surface-2); z-index: 2;">鋼筋號數</th>
+              <th style="position: sticky; top: 0; background: var(--surface-2); z-index: 2;">一般(底) - 甲級</th>
+              <th style="position: sticky; top: 0; background: var(--surface-2); z-index: 2;">一般(底) - 乙級</th>
+              <th style="position: sticky; top: 0; background: var(--surface-2); z-index: 2;">頂層(面) - 甲級</th>
+              <th style="position: sticky; top: 0; background: var(--surface-2); z-index: 2;">頂層(面) - 乙級</th>
+            </tr>
+          </thead>
+          <tbody id="lapTableBody"></tbody>
+        </table>
+      </div>
     </form>
   </dialog>
 

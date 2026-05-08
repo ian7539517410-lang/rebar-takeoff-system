@@ -502,6 +502,61 @@ function row(id, mark, barNo, count, lengthCm, note) {
   return { id, mark, barNo, count, lengthCm, totalLength, weight, note };
 }
 
+function layerForFace(beam, face, layerIndex) {
+  const layers = face === "T" ? beam.topLayers : beam.bottomLayers;
+  return layers?.[layerIndex] || null;
+}
+
+function layerSideCount(layer, side) {
+  return Math.max(0, number(layer?.[side], 0));
+}
+
+function layerCutoffLength(layer, side, fallback) {
+  const key = side === "left" ? "leftCutoff" : "rightCutoff";
+  return number(layer?.[key], fallback);
+}
+
+function continuityAt(context, face, layerIndex, side) {
+  const spans = context?.spans || [];
+  const spanIndex = number(context?.spanIndex, 0);
+  const currentLayer = layerForFace(context?.beam, face, layerIndex);
+  const currentSide = side === "left" ? "left" : "right";
+  const neighborSide = side === "left" ? "right" : "left";
+  const neighbor = side === "left" ? spans[spanIndex - 1] : spans[spanIndex + 1];
+  const column = side === "left" ? context?.leftColumn : context?.rightColumn;
+  const currentCount = layerSideCount(currentLayer, currentSide);
+  const columnWidth = number(column?.width, 70);
+
+  if (!neighbor || !currentLayer) {
+    return { hasNeighbor: false, sameBar: false, currentCount, neighborCount: 0, commonCount: 0, columnWidth, neighborLayer: null, neighborSpan: 0 };
+  }
+
+  const neighborLayer = layerForFace(neighbor.beam, face, layerIndex);
+  const sameBar = Boolean(currentLayer.barNo && neighborLayer?.barNo && currentLayer.barNo === neighborLayer.barNo);
+  const neighborCount = sameBar ? layerSideCount(neighborLayer, neighborSide) : 0;
+  const commonCount = sameBar ? Math.min(currentCount, neighborCount) : 0;
+  return {
+    hasNeighbor: true,
+    sameBar,
+    currentCount,
+    neighborCount,
+    commonCount,
+    columnWidth,
+    neighborLayer,
+    neighborSpan: number(neighbor.beam?.span, 0)
+  };
+}
+
+function continuedExtraCount(extraCount, throughCount, info) {
+  return Math.min(extraCount, Math.max(0, number(info?.commonCount, 0) - throughCount));
+}
+
+function stampBenchRow(item, beam, orderIndex) {
+  item.beamId = beam.id;
+  item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
+  return item;
+}
+
 function calculateBeamBench() {
   const bench = state.beamBench;
   const validation = validateBenchSequence(bench.sequence);
@@ -512,6 +567,7 @@ function calculateBeamBench() {
     return { bars, warnings, ok: false, totalLength: 0, totalWeight: 0 };
   }
 
+  const spans = [];
   for (let i = 1; i < bench.sequence.length; i += 2) {
     const beamId = bench.sequence[i];
     const leftColumn = bench.columns[bench.sequence[i - 1]];
@@ -524,25 +580,48 @@ function calculateBeamBench() {
     normalizeBenchBeam(beam);
     const beamCheck = validateBenchBeam(beam);
     warnings.push(...beamCheck.warnings.map((text) => `${beamId}: ${text}`));
-    if (!beamCheck.ok) continue;
-    bars.push(...calculateBenchBeamBars(beam, leftColumn, rightColumn, i));
+    const topFirst = beam.topLayers[0];
+    const bottomFirst = beam.bottomLayers[0];
+    const fatalDataMissing = !topFirst?.barNo
+      || !bottomFirst?.barNo
+      || number(beam.width, 0) <= 0
+      || number(beam.depth, 0) <= 0
+      || number(beam.span, 0) <= 0;
+    if (fatalDataMissing) continue;
+    spans.push({
+      beamId,
+      beam,
+      leftColumn,
+      rightColumn,
+      leftColumnId: bench.sequence[i - 1],
+      rightColumnId: bench.sequence[i + 1],
+      orderIndex: i
+    });
   }
+  spans.forEach((context, spanIndex) => {
+    context.spanIndex = spanIndex;
+    context.spans = spans;
+  });
+  spans.forEach((context) => {
+    bars.push(...calculateBenchBeamBars(context));
+  });
 
   const totalLength = bars.reduce((sum, item) => sum + item.totalLength, 0);
   const totalWeight = bars.reduce((sum, item) => sum + item.weight, 0);
   return { bars, warnings, ok: warnings.length === 0, totalLength, totalWeight };
 }
 
-function calculateBenchBeamBars(beam, leftColumn, rightColumn, orderIndex) {
+function calculateBenchBeamBars(context) {
+  const { beam, leftColumn, rightColumn, orderIndex } = context;
   const bars = [];
   const span = number(beam.span, 620);
 
   beam.topLayers.forEach((layer, index) => {
-    bars.push(...calculateLayerBars(beam, layer, index + 1, "T", span, leftColumn, rightColumn, orderIndex));
+    bars.push(...calculateLayerBars(context, layer, index, "T", span, leftColumn, rightColumn, orderIndex));
   });
 
   beam.bottomLayers.forEach((layer, index) => {
-    bars.push(...calculateLayerBars(beam, layer, index + 1, "B", span, leftColumn, rightColumn, orderIndex));
+    bars.push(...calculateLayerBars(context, layer, index, "B", span, leftColumn, rightColumn, orderIndex));
   });
 
   bars.push(calculateStirrupRow(beam, orderIndex));
@@ -570,7 +649,9 @@ function parseSkinQuantity(text) {
   return { perSide, sides, total: perSide * sides, label: `${perSide}*${sides}` };
 }
 
-function calculateLayerBars(beam, layer, layerNo, face, span, leftColumn, rightColumn, orderIndex) {
+function calculateLayerBars(context, layer, layerIndex, face, span, leftColumn, rightColumn, orderIndex) {
+  const beam = context.beam;
+  const layerNo = layerIndex + 1;
   const left = Math.max(0, number(layer.left, 0));
   const mid = Math.max(0, number(layer.mid, 0));
   const right = Math.max(0, number(layer.right, 0));
@@ -581,43 +662,58 @@ function calculateLayerBars(beam, layer, layerNo, face, span, leftColumn, rightC
   const throughCount = mid;
   const leftExtra = Math.max(0, left - throughCount);
   const rightExtra = Math.max(0, right - throughCount);
+  const leftInfo = continuityAt(context, face, layerIndex, "left");
+  const rightInfo = continuityAt(context, face, layerIndex, "right");
+  const leftThroughAnchor = leftInfo.commonCount >= throughCount ? 0 : leftAnchor;
+  const rightThroughAnchor = rightInfo.commonCount >= throughCount ? 0 : rightAnchor;
+  const rightThroughPass = rightInfo.commonCount >= throughCount ? rightInfo.columnWidth : 0;
+  const leftContinuedExtra = continuedExtraCount(leftExtra, throughCount, leftInfo);
+  const rightContinuedExtra = continuedExtraCount(rightExtra, throughCount, rightInfo);
+  const leftAnchoredExtra = Math.max(0, leftExtra - leftContinuedExtra);
+  const rightAnchoredExtra = Math.max(0, rightExtra - rightContinuedExtra);
   const faceText = face === "T" ? "上層" : "下層";
   const bars = [];
 
   if (throughCount > 0) {
     if (beam.connectionMode === "lap") {
       const ratio = number(isTop ? beam.topLapPointRatio : beam.bottomLapPointRatio, 0.5);
-      const leftLen = roundUpCm(span * ratio + leftAnchor + ls / 2);
-      const rightLen = roundUpCm(span * (1 - ratio) + rightAnchor + ls / 2);
+      const leftLen = roundUpCm(span * ratio + leftThroughAnchor + ls / 2);
+      const rightLen = roundUpCm(span * (1 - ratio) + rightThroughAnchor + rightThroughPass + ls / 2);
+      const leftNote = leftThroughAnchor > 0 ? `錨定(Ldh+A1) ${leftThroughAnchor}cm` : "內柱連續通過，不另加錨定";
+      const rightNote = rightThroughAnchor > 0
+        ? `錨定(Ldh+A1) ${rightThroughAnchor}cm`
+        : `內柱連續通過${rightThroughPass > 0 ? `，含柱寬 ${rightThroughPass}cm` : ""}`;
       [
-        row(`${beam.id}-${face}${layerNo}L`, `${faceText}第${layerNo}排左段搭接筋`, layer.barNo, throughCount, leftLen, `錨定(Ldh+A1) ${leftAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`),
-        row(`${beam.id}-${face}${layerNo}R`, `${faceText}第${layerNo}排右段搭接筋`, layer.barNo, throughCount, rightLen, `錨定(Ldh+A1) ${rightAnchor}cm + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`)
+        row(`${beam.id}-${face}${layerNo}L`, `${faceText}第${layerNo}排左段搭接筋`, layer.barNo, throughCount, leftLen, `${leftNote} + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`),
+        row(`${beam.id}-${face}${layerNo}R`, `${faceText}第${layerNo}排右段搭接筋`, layer.barNo, throughCount, rightLen, `${rightNote} + ${isTop ? "頂層" : "一般"}搭接半長 ${ls / 2}cm`)
       ].forEach((item) => {
-        item.beamId = beam.id;
-        item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
-        bars.push(item);
+        bars.push(stampBenchRow(item, beam, orderIndex));
       });
     } else {
-      const throughLen = roundUpCm(span + leftAnchor + rightAnchor);
-      const item = row(`${beam.id}-${face}${layerNo}`, `${faceText}第${layerNo}排續接筋`, layer.barNo, throughCount, throughLen, `左右錨定(Ldh+A1) ${leftAnchor}/${rightAnchor}cm`);
-      item.beamId = beam.id;
-      item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
-      bars.push(item);
+      const throughLen = roundUpCm(span + leftThroughAnchor + rightThroughAnchor + rightThroughPass);
+      const note = `左${leftThroughAnchor > 0 ? `錨定 ${leftThroughAnchor}cm` : "連續"} / 右${rightThroughAnchor > 0 ? `錨定 ${rightThroughAnchor}cm` : "連續"}${rightThroughPass > 0 ? `，含柱寬 ${rightThroughPass}cm` : ""}`;
+      bars.push(stampBenchRow(row(`${beam.id}-${face}${layerNo}`, `${faceText}第${layerNo}排續接筋`, layer.barNo, throughCount, throughLen, note), beam, orderIndex));
     }
   }
-  if (leftExtra > 0) {
+  if (leftAnchoredExtra > 0) {
     const len = roundUpCm(leftAnchor + number(layer.leftCutoff, span / 3));
-    const item = row(`${beam.id}-${face}L${layerNo}`, `${faceText}第${layerNo}排左端加伸筋`, layer.barNo, leftExtra, len, `錨定(Ldh+A1) ${leftAnchor}cm + 自左柱邊延伸 ${number(layer.leftCutoff, span / 3)}cm`);
-    item.beamId = beam.id;
-    item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
-    bars.push(item);
+    const diffNote = leftInfo.hasNeighbor && leftInfo.sameBar
+      ? `內柱左右支數差額 ${leftAnchoredExtra} 支需收頭`
+      : `錨定(Ldh+A1) ${leftAnchor}cm`;
+    bars.push(stampBenchRow(row(`${beam.id}-${face}L${layerNo}`, `${faceText}第${layerNo}排左端加伸筋`, layer.barNo, leftAnchoredExtra, len, `${diffNote} + 自左柱邊延伸 ${number(layer.leftCutoff, span / 3)}cm`), beam, orderIndex));
   }
-  if (rightExtra > 0) {
+  if (rightContinuedExtra > 0) {
+    const currentCutoff = layerCutoffLength(layer, "right", span / 3);
+    const nextCutoff = layerCutoffLength(rightInfo.neighborLayer, "left", number(rightInfo.neighborSpan, span) / 3);
+    const len = roundUpCm(currentCutoff + rightInfo.columnWidth + nextCutoff);
+    bars.push(stampBenchRow(row(`${beam.id}-${face}RC${layerNo}`, `${faceText}第${layerNo}排右端連續加伸筋`, layer.barNo, rightContinuedExtra, len, `穿過${rightInfo.columnWidth}cm內柱，左右延伸 ${currentCutoff}/${nextCutoff}cm`), beam, orderIndex));
+  }
+  if (rightAnchoredExtra > 0) {
     const len = roundUpCm(rightAnchor + number(layer.rightCutoff, span / 3));
-    const item = row(`${beam.id}-${face}R${layerNo}`, `${faceText}第${layerNo}排右端加伸筋`, layer.barNo, rightExtra, len, `錨定(Ldh+A1) ${rightAnchor}cm + 自右柱邊延伸 ${number(layer.rightCutoff, span / 3)}cm`);
-    item.beamId = beam.id;
-    item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
-    bars.push(item);
+    const diffNote = rightInfo.hasNeighbor && rightInfo.sameBar
+      ? `內柱左右支數差額 ${rightAnchoredExtra} 支需收頭`
+      : `錨定(Ldh+A1) ${rightAnchor}cm`;
+    bars.push(stampBenchRow(row(`${beam.id}-${face}R${layerNo}`, `${faceText}第${layerNo}排右端加伸筋`, layer.barNo, rightAnchoredExtra, len, `${diffNote} + 自右柱邊延伸 ${number(layer.rightCutoff, span / 3)}cm`), beam, orderIndex));
   }
   return bars;
 }
@@ -1361,6 +1457,10 @@ function drawBeam2d(ctx, calc) {
   const selected = bench.beams[bench.selectedBeamId] || spans[0].beam;
   const topLap = selected.connectionMode === "lap" ? calcLap(selected.topLayers[0].barNo, selected.lapClass, true) : 0;
   const bottomLap = selected.connectionMode === "lap" ? calcLap(selected.bottomLayers[0].barNo, selected.lapClass, false) : 0;
+  spans.forEach((item, index) => {
+    item.spanIndex = index;
+    item.spans = spans;
+  });
 
   drawDetailFrame(ctx);
   detailText(ctx, `${selected.connectionMode === "lap" ? "搭接" : "續接"} / ${selected.lapClass === "B" ? "乙級" : "甲級"}`, 95, 76, 18, "#2368a6");
@@ -1388,8 +1488,8 @@ function drawBeam2d(ctx, calc) {
     detailText(ctx, `下層筋端部 2h 禁止搭接 = ${noLap}cm`, x0 + 6, yBottom + 58, 14, "#c93434");
     dimension(ctx, x0, 528, x1, 528, `${span}cm`);
 
-    drawLayerGroup(ctx, beam, "topLayers", "T", x0, x1, yTop, scale, spanIndex, spans.length, number(item.leftColumn?.width, 70) * scale, rightColumnDrawW, item.leftColumn, item.rightColumn);
-    drawLayerGroup(ctx, beam, "bottomLayers", "B", x0, x1, yBottom, scale, spanIndex, spans.length, number(item.leftColumn?.width, 70) * scale, rightColumnDrawW, item.leftColumn, item.rightColumn);
+    drawLayerGroup(ctx, beam, "topLayers", "T", x0, x1, yTop, scale, spanIndex, spans.length, number(item.leftColumn?.width, 70) * scale, rightColumnDrawW, item.leftColumn, item.rightColumn, item);
+    drawLayerGroup(ctx, beam, "bottomLayers", "B", x0, x1, yBottom, scale, spanIndex, spans.length, number(item.leftColumn?.width, 70) * scale, rightColumnDrawW, item.leftColumn, item.rightColumn, item);
     drawStirrupNotes(ctx, beam, x0, x1, yBottom + 114, scale);
 
     drawColumnZone(ctx, rightColumnStart, rightColumnDrawW, 86, 505, columnIds[spanIndex + 1] || `C${spanIndex + 2}`, rightColumnWidth);
@@ -1431,7 +1531,7 @@ function drawBeamBodyLine(ctx, x0, x1, yTop, yBottom, beam) {
   detailText(ctx, "上層可搭接區 L/2", x0 + (x1 - x0) / 2 - 62, 109, 14, "#1f8f5f");
 }
 
-function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, spanCount, leftColumnW, rightColumnW, leftColumn, rightColumn) {
+function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, spanCount, leftColumnW, rightColumnW, leftColumn, rightColumn, spanContext = null) {
   const isTop = face === "T";
   const layers = beam[key];
   layers.forEach((layer, index) => {
@@ -1446,6 +1546,14 @@ function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, s
     const leftAnchor = anchorLength(beam, leftColumn, layer.barNo, isTop);
     const rightAnchor = anchorLength(beam, rightColumn, layer.barNo, isTop);
     const a1 = hookA1Length(layer.barNo);
+    const context = spanContext || { beam, leftColumn, rightColumn, spanIndex, spans: [] };
+    const leftInfo = continuityAt(context, face, index, "left");
+    const rightInfo = continuityAt(context, face, index, "right");
+    const leftThroughHook = leftInfo.commonCount < mid;
+    const rightThroughHook = rightInfo.commonCount < mid;
+    const leftThroughAnchor = leftThroughHook ? leftAnchor : 0;
+    const rightThroughAnchor = rightThroughHook ? rightAnchor : 0;
+    const rightThroughPass = rightThroughHook ? 0 : rightInfo.columnWidth;
     if (mid > 0) {
       const lap = beam.connectionMode === "lap" ? calcLap(layer.barNo, beam.lapClass, isTop) : 0;
       if (beam.connectionMode === "lap") {
@@ -1454,33 +1562,47 @@ function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, s
         const lapCenterX = x0 + lapRatio * (x1 - x0);
         const lapStartX = lapCenterX - (lap * scale) / 2;
         const lapEndX = lapCenterX + (lap * scale) / 2;
-        drawAnchoredBar(ctx, x0, lapEndX, y, hookDir, color, 4, spanIndex === 0, false, leftColumnW, 0);
-        drawAnchoredBar(ctx, lapStartX, x1, y + hookDir * 11, hookDir, color, 4, false, spanIndex === spanCount - 1, 0, rightColumnW);
+        const rightEndX = x1 + rightThroughPass * scale;
+        drawAnchoredBar(ctx, x0, lapEndX, y, hookDir, color, 4, leftThroughHook, false, leftColumnW, 0);
+        drawAnchoredBar(ctx, lapStartX, rightEndX, y + hookDir * 11, hookDir, color, 4, false, rightThroughHook, 0, rightColumnW);
         drawLapHandle(ctx, beam, lapCenterX, y + hookDir * 6, lap, isTop, ratioKey);
-        const leftLen = roundUpCm(number(beam.span, 0) * lapRatio + leftAnchor + lap / 2);
-        const rightLen = roundUpCm(number(beam.span, 0) * (1 - lapRatio) + rightAnchor + lap / 2);
+        const leftLen = roundUpCm(number(beam.span, 0) * lapRatio + leftThroughAnchor + lap / 2);
+        const rightLen = roundUpCm(number(beam.span, 0) * (1 - lapRatio) + rightThroughAnchor + rightThroughPass + lap / 2);
         labelBox(ctx, `${layer.barNo} 左${leftLen}cmx${mid}`, x0 + 12, y + labelDy, color, isTop);
         labelBox(ctx, `${layer.barNo} 右${rightLen}cmx${mid}`, Math.max(lapEndX + 18, x1 - 178), y + labelDy + hookDir * 11, color, isTop);
-        if (index === 0 && spanIndex === 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 58, color, isTop);
-        if (index === 0 && spanIndex === spanCount - 1) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 58, color, isTop);
+        if (index === 0 && leftThroughHook) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 58, color, isTop);
+        if (index === 0 && rightThroughHook) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 58, color, isTop);
       } else {
-        drawAnchoredBar(ctx, x0, x1, y, hookDir, color, 4, spanIndex === 0, spanIndex === spanCount - 1, leftColumnW, rightColumnW);
-        labelBox(ctx, `${layer.barNo} ${roundUpCm(number(beam.span, 0) + leftAnchor + rightAnchor)}cmx${mid}`, x0 + 12, y + labelDy, color, isTop);
+        drawAnchoredBar(ctx, x0, x1 + rightThroughPass * scale, y, hookDir, color, 4, leftThroughHook, rightThroughHook, leftColumnW, rightColumnW);
+        labelBox(ctx, `${layer.barNo} ${roundUpCm(number(beam.span, 0) + leftThroughAnchor + rightThroughAnchor + rightThroughPass)}cmx${mid}`, x0 + 12, y + labelDy, color, isTop);
         detailText(ctx, `蝥x${mid}`, x0 + (x1 - x0) / 2 - 18, y + (isTop ? 20 : -12), 12, "#182026");
       }
     }
     const leftExtra = Math.max(0, left - mid);
     const rightExtra = Math.max(0, right - mid);
-    if (leftExtra > 0) {
+    const leftContinuedExtra = continuedExtraCount(leftExtra, mid, leftInfo);
+    const rightContinuedExtra = continuedExtraCount(rightExtra, mid, rightInfo);
+    const leftAnchoredExtra = Math.max(0, leftExtra - leftContinuedExtra);
+    const rightAnchoredExtra = Math.max(0, rightExtra - rightContinuedExtra);
+    if (leftAnchoredExtra > 0) {
       const lx = x0 + number(layer.leftCutoff, 0) * scale;
       drawAnchoredBar(ctx, x0, lx, y + hookDir * 20, hookDir, color, 3, true, false, leftColumnW, 0);
-      labelBox(ctx, `${layer.barNo} ${roundUpCm(leftAnchor + number(layer.leftCutoff, 0))}cmx${leftExtra}`, x0 + 8, y + hookDir * 44, color, isTop);
+      labelBox(ctx, `${layer.barNo} ${roundUpCm(leftAnchor + number(layer.leftCutoff, 0))}cmx${leftAnchoredExtra}`, x0 + 8, y + hookDir * 44, color, isTop);
       if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 76, color, isTop);
     }
-    if (rightExtra > 0) {
+    if (rightContinuedExtra > 0) {
+      const currentCutoff = layerCutoffLength(layer, "right", number(beam.span, 0) / 3);
+      const nextCutoff = layerCutoffLength(rightInfo.neighborLayer, "left", number(rightInfo.neighborSpan, number(beam.span, 0)) / 3);
+      const rx = x1 - currentCutoff * scale;
+      const endX = x1 + rightInfo.columnWidth * scale + nextCutoff * scale;
+      drawAnchoredBar(ctx, rx, endX, y + hookDir * 20, hookDir, color, 3, false, false, 0, 0);
+      labelBox(ctx, `${layer.barNo} ${roundUpCm(currentCutoff + rightInfo.columnWidth + nextCutoff)}cmx${rightContinuedExtra}`, Math.max(rx + 8, x1 - 152), y + hookDir * 44, color, isTop);
+      detailText(ctx, "連續", x1 + 8, y + hookDir * 34, 12, color);
+    }
+    if (rightAnchoredExtra > 0) {
       const rx = x1 - number(layer.rightCutoff, 0) * scale;
       drawAnchoredBar(ctx, rx, x1, y + hookDir * 20, hookDir, color, 3, false, true, 0, rightColumnW);
-      labelBox(ctx, `${layer.barNo} ${roundUpCm(rightAnchor + number(layer.rightCutoff, 0))}cmx${rightExtra}`, Math.max(rx + 8, x1 - 152), y + hookDir * 44, color, isTop);
+      labelBox(ctx, `${layer.barNo} ${roundUpCm(rightAnchor + number(layer.rightCutoff, 0))}cmx${rightAnchoredExtra}`, Math.max(rx + 8, x1 - 152), y + hookDir * 44, color, isTop);
       if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 76, color, isTop);
     }
   });

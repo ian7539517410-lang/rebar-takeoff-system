@@ -1,20 +1,38 @@
 :root {
   color-scheme: light;
-  --bg: #f4f6f7;
+  --bg: #f3f6f9;
   --surface: #ffffff;
-  --surface-2: #edf2f4;
-  --ink: #182026;
-  --muted: #66737c;
-  --line: #cfd8dd;
-  --green: #1f8f5f;
-  --green-soft: rgba(31, 143, 95, 0.16);
-  --red: #c93434;
-  --red-soft: rgba(201, 52, 52, 0.15);
-  --amber: #b87508;
-  --blue: #2368a6;
-  --steel: #566879;
+  --surface-2: #e9eef2;
+  --ink: #202b36;
+  --muted: #637381;
+  --line: #dfe3e8;
+  --primary: #0052cc;
+  --primary-hover: #003d99;
+  --green: #00a76f;
+  --green-soft: rgba(0, 167, 111, 0.16);
+  --red: #ff5630;
+  --red-soft: rgba(255, 86, 48, 0.16);
+  --amber: #ffab00;
+  --steel: #454f5b;
+  --blue: var(--primary);
   --violet: #6650a4;
-  --shadow: 0 10px 28px rgba(18, 32, 42, 0.08);
+  --shadow: 0 4px 20px rgba(145, 158, 171, 0.16);
+  --canvas-bg: #f4f6f8;
+  --font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+}
+
+body[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161c24;
+  --surface: #212b36;
+  --surface-2: #2d3a46;
+  --ink: #f9fafb;
+  --muted: #919eab;
+  --line: #333d48;
+  --primary: #3366ff;
+  --primary-hover: #1939b7;
+  --canvas-bg: #11151a;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
 }
 
 * {
@@ -25,7 +43,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif;
+  font-family: var(--font-family);
 }
 
 button,
@@ -113,11 +131,15 @@ h2 {
   border-right: 0;
   border-bottom: 1px solid var(--line);
   display: grid;
-  grid-template-columns: repeat(3, minmax(280px, 1fr));
+  grid-template-columns: minmax(520px, 1.45fr) minmax(300px, 0.7fr);
   gap: 14px;
   align-items: start;
-  max-height: 520px;
+  max-height: 460px;
   overflow: auto;
+}
+
+.beam-layout #beamBenchPanel {
+  grid-column: 1;
 }
 
 .beam-layout .side-panel .panel-section {
@@ -129,8 +151,9 @@ h2 {
 .data-panel {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
+  transition: box-shadow 0.3s ease;
 }
 
 .panel-section {
@@ -209,7 +232,7 @@ canvas {
   background:
     linear-gradient(90deg, rgba(86, 104, 121, 0.08) 1px, transparent 1px),
     linear-gradient(rgba(86, 104, 121, 0.08) 1px, transparent 1px),
-    #fbfcfd;
+    var(--canvas-bg);
   background-size: 36px 36px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -278,7 +301,7 @@ canvas {
   margin: 10px 0 12px;
   border: 1px dashed var(--line);
   border-radius: 6px;
-  background: #fbfcfd;
+  background: var(--surface);
 }
 
 .sequence-chip {
@@ -358,7 +381,7 @@ select {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 7px 9px;
-  background: #fff;
+  background: var(--surface);
   color: var(--ink);
 }
 
@@ -386,11 +409,17 @@ button:focus-visible {
 }
 
 .primary-button {
-  border: 1px solid #1b5d94;
-  background: var(--blue);
+  border: none;
+  background: var(--primary);
   color: #fff;
-  padding: 7px 14px;
+  border-radius: 6px;
+  padding: 8px 16px;
   font-weight: 700;
+  transition: background 0.2s;
+}
+
+.primary-button:hover {
+  background: var(--primary-hover);
 }
 
 .text-button {
@@ -464,7 +493,7 @@ td {
 th {
   position: sticky;
   top: 0;
-  background: #eef3f6;
+  background: var(--surface-2);
   z-index: 1;
 }
 
@@ -517,6 +546,12 @@ dialog {
   border-radius: 8px;
   padding: 0;
   box-shadow: var(--shadow);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.modern-dialog {
+  width: min(980px, calc(100vw - 32px));
 }
 
 dialog::backdrop {
@@ -525,6 +560,27 @@ dialog::backdrop {
 
 .dialog-body {
   padding: 18px;
+}
+
+.formula-reference {
+  margin-top: 15px;
+}
+
+.settings-layout {
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.settings-sidebar {
+  width: 35%;
+  min-width: 260px;
+  border-right: 1px solid var(--line);
+  padding-right: 20px;
+}
+
+.settings-layout .form-grid {
+  flex: 1;
 }
 
 .lap-table {
@@ -578,8 +634,23 @@ dialog::backdrop {
   }
 
   .form-grid,
-  .summary-strip {
+  .summary-strip,
+  .settings-layout {
     grid-template-columns: 1fr;
+  }
+
+  .settings-layout {
+    display: block;
+  }
+
+  .settings-sidebar {
+    width: auto;
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding-right: 0;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
   }
 
   .bench-row,

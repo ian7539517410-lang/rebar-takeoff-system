@@ -22,6 +22,7 @@ const barColors = {
 
 const defaults = {
   component: "beam",
+  theme: "light",
   params: {
     fc: 28,
     fy: 420,
@@ -31,6 +32,14 @@ const defaults = {
     classBFactor: 1.3,
     spliceMode: "each",
     floorWarning: 5,
+    formula: {
+      alpha: 1.3,
+      beta: 1.0,
+      gamma: 1.0,
+      lambda: 1.0,
+      ldhMultiplier: 0.24,
+      weightFormula: "0.006165 * d^2"
+    },
     lapOverrides: {}
   },
   beam: {
@@ -97,7 +106,7 @@ const defaults = {
         connectionMode: "lap",
         lapPointRatio: 0.5,
         topLapPointRatio: 0.5,
-        bottomLapPointRatio: 0.5,
+        bottomLapPointRatio: 0.15,
         topLayers: [
           { barNo: "#10", left: 5, mid: 3, right: 5, leftCutoff: 285, rightCutoff: 285 },
           { barNo: "#10", left: 2, mid: 0, right: 2, leftCutoff: 200, rightCutoff: 200 },
@@ -151,6 +160,9 @@ const els = {
   c3d: document.querySelector("#drawing3d"),
   lapDialog: document.querySelector("#lapTableDialog"),
   lapTable: document.querySelector("#lapTable"),
+  formulaDialog: document.querySelector("#formulaConfigDialog"),
+  openFormulaConfig: document.querySelector("#openFormulaConfig"),
+  themeToggle: document.querySelector("#themeToggle"),
   benchAddType: document.querySelector("#benchAddType"),
   benchComponentSelect: document.querySelector("#benchComponentSelect"),
   appendBenchItem: document.querySelector("#appendBenchItem"),
@@ -175,6 +187,7 @@ function normalizeProject(raw) {
   if (!raw || typeof raw !== "object") return next;
   Object.assign(next, raw);
   next.params = { ...clone(defaults.params), ...(raw.params || {}) };
+  next.params.formula = { ...clone(defaults.params.formula), ...((raw.params || {}).formula || {}) };
   next.beam = { ...clone(defaults.beam), ...(raw.beam || {}) };
   next.column = { ...clone(defaults.column), ...(raw.column || {}) };
   next.wall = { ...clone(defaults.wall), ...(raw.wall || {}) };
@@ -213,8 +226,8 @@ function normalizeBenchBeam(beam) {
   beam.lapClass = beam.lapClass || sample.lapClass;
   beam.connectionMode = beam.connectionMode || sample.connectionMode;
   beam.lapPointRatio = number(beam.lapPointRatio, sample.lapPointRatio);
-  beam.topLapPointRatio = number(beam.topLapPointRatio, beam.lapPointRatio);
-  beam.bottomLapPointRatio = number(beam.bottomLapPointRatio, beam.lapPointRatio);
+  beam.topLapPointRatio = number(beam.topLapPointRatio, 0.5);
+  beam.bottomLapPointRatio = number(beam.bottomLapPointRatio, 0.15);
   beam.topLayers = normalizeLayers(beam.topLayers, sample.topLayers);
   beam.bottomLayers = normalizeLayers(beam.bottomLayers, sample.bottomLayers);
   beam.stirrups = { ...sample.stirrups, ...(beam.stirrups || {}) };
@@ -243,17 +256,44 @@ function dbCm(barNo) {
 
 function unitWeightKgM(barNo) {
   const d = barDb[barNo] || 25.4;
-  return 0.006165 * d * d;
+  return evaluateWeightFormula(d);
 }
 
 function calcDevelopment(barNo, isTop) {
   const p = state.params;
+  const f = p.formula || defaults.params.formula;
   const db = dbCm(barNo);
-  const strengthFactor = number(p.fy, 420) / 420;
-  const concreteFactor = Math.sqrt(28 / Math.max(14, number(p.fc, 28)));
-  const topFactor = isTop ? number(p.topFactor, 1.3) : 1;
-  const raw = number(p.ldFactor, 38) * db * strengthFactor * concreteFactor * topFactor;
+  const fy = number(p.fy, 420);
+  const fc = Math.max(14, number(p.fc, 28));
+  const lambda = Math.max(0.1, number(f.lambda, 1));
+  const topFactor = isTop ? number(f.alpha, 1.3) : 1;
+  const sizeFactor = (barDb[barNo] || 25.4) <= 19.1 ? 0.8 : number(f.gamma, 1);
+  const raw = (fy / (1.1 * lambda * Math.sqrt(fc))) * topFactor * number(f.beta, 1) * sizeFactor * db;
   return roundUpCm(Math.max(30, raw));
+}
+
+function calcHookDevelopment(barNo, isTop = false) {
+  const p = state.params;
+  const f = p.formula || defaults.params.formula;
+  const db = dbCm(barNo);
+  const fy = number(p.fy, 420);
+  const fc = Math.max(14, number(p.fc, 28));
+  const ldh = (number(f.ldhMultiplier, 0.24) * fy / Math.sqrt(fc)) * db;
+  const topFactor = isTop ? number(f.alpha, 1.3) : 1;
+  return roundUpCm(Math.max(15, 8 * db, ldh * topFactor));
+}
+
+function evaluateWeightFormula(d) {
+  const expression = String(state.params.formula?.weightFormula || defaults.params.formula.weightFormula)
+    .replaceAll("^", "**")
+    .trim();
+  if (!/^[0-9dD+\-*/().\s*]+$/.test(expression)) return 0.006165 * d * d;
+  try {
+    const value = Function("d", `"use strict"; return (${expression});`)(d);
+    return Number.isFinite(value) && value > 0 ? value : 0.006165 * d * d;
+  } catch {
+    return 0.006165 * d * d;
+  }
 }
 
 function calcLap(barNo, lapClass, isTop) {
@@ -365,7 +405,7 @@ function calculate() {
     const topRightExtraCount = Math.max(0, number(data.topBarsRight, topThroughCount) - topThroughCount);
     const extension = roundUpCm(span * number(data.topExtraCutoffRatio, 0.33));
     const extraLen = roundUpCm(hook + extension);
-    const stirrupLen = roundUpCm((number(data.width, 35) + number(data.depth, 70)) * 2 - number(data.cover, 4) * 8 + 20);
+    const stirrupLen = calcStirrupLength(number(data.width, 35), number(data.depth, 70), number(data.cover, 4), data.stirrupNo);
     const denseCount = Math.ceil((2 * number(data.depth, 70) * 2) / number(data.stirrupSpacingDense, 10));
     const normalCount = Math.ceil(Math.max(0, span - 4 * number(data.depth, 70)) / number(data.stirrupSpacingNormal, 20));
     bars.push(row("B-T1", `${topThroughCount}-上層貫通筋`, data.barNo, topThroughCount, mainLen, "上層貫通筋"));
@@ -539,7 +579,7 @@ function calculateStirrupRow(beam, orderIndex) {
   const midRange = Math.max(0, number(beam.span, 620) - denseRange);
   const midCount = stirrupCount(s.midCount, midRange, s.midSpacing);
   const count = leftCount + midCount + rightCount;
-  const len = roundUpCm((number(beam.width, 35) + number(beam.depth, 70)) * 2 - number(beam.cover, 4) * 8 + 20);
+  const len = calcStirrupLength(number(beam.width, 35), number(beam.depth, 70), number(beam.cover, 4), s.barNo);
   const item = row(`${beam.id}-ST`, `箍筋 左@${s.leftSpacing}/中@${s.midSpacing}/右@${s.rightSpacing}`, s.barNo, count, len, `左${leftCount}只 中${midCount}只 右${rightCount}只`);
   item.beamId = beam.id;
   item.benchOrder = `L${Math.ceil(orderIndex / 2)}`;
@@ -552,6 +592,14 @@ function stirrupCount(count, range, spacing) {
   return Math.ceil(number(range, 0) / Math.max(1, number(spacing, 20))) + 1;
 }
 
+function calcStirrupLength(width, depth, cover, barNo) {
+  const db = dbCm(barNo);
+  const hookLen = Math.max(7.5, 6 * db);
+  const clearW = Math.max(0, width - 2 * cover);
+  const clearH = Math.max(0, depth - 2 * cover);
+  return roundUpCm(clearW * 2 + clearH * 2 + hookLen * 2);
+}
+
 function hookA1Length(barNo) {
   const db = dbCm(barNo);
   const multiplier = (barDb[barNo] || 25.4) <= 25.4 ? 6 : 8;
@@ -559,7 +607,7 @@ function hookA1Length(barNo) {
 }
 
 function anchorLength(beam, column, barNo, isTop = false) {
-  return roundUpCm(calcDevelopment(barNo, isTop));
+  return calcHookDevelopment(barNo, isTop);
 }
 
 function validateBenchSequence(sequence) {
@@ -954,6 +1002,7 @@ function bindStaticControls() {
   document.querySelector("#resetParams").addEventListener("click", () => {
     state.params = clone(defaults.params);
     syncParamControls();
+    renderFormulaConfig();
     renderLapTable();
     logChange("重設參數", "計算參數已恢復預設值");
     update();
@@ -962,6 +1011,16 @@ function bindStaticControls() {
   document.querySelector("#openLapTable").addEventListener("click", () => {
     renderLapTable();
     els.lapDialog.showModal();
+  });
+  els.openFormulaConfig?.addEventListener("click", () => {
+    renderFormulaConfig();
+    els.formulaDialog.showModal();
+  });
+  els.themeToggle?.addEventListener("click", () => {
+    state.theme = state.theme === "dark" ? "light" : "dark";
+    applyTheme();
+    logChange("介面主題", state.theme === "dark" ? "深色模式" : "亮色模式");
+    update();
   });
   document.querySelector("#saveProject").addEventListener("click", saveProject);
   document.querySelector("#loadProject").addEventListener("click", loadProject);
@@ -1000,6 +1059,13 @@ function switchDrawingView(view) {
     button.classList.toggle("active", button.dataset.viewToggle === view);
   });
   requestAnimationFrame(update);
+}
+
+function applyTheme() {
+  document.body.dataset.theme = state.theme === "dark" ? "dark" : "light";
+  if (els.themeToggle) {
+    els.themeToggle.textContent = state.theme === "dark" ? "亮色" : "深色";
+  }
 }
 
 function labelForParam(key) {
@@ -1312,13 +1378,13 @@ function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, s
         drawLapHandle(ctx, beam, lapCenterX, y + hookDir * 6, lap, isTop, ratioKey);
         const leftLen = roundUpCm(number(beam.span, 0) * lapRatio + leftAnchor + lap / 2);
         const rightLen = roundUpCm(number(beam.span, 0) * (1 - lapRatio) + rightAnchor + lap / 2);
-        labelBox(ctx, `${layer.barNo} 左${leftLen}cmx${mid}`, x0 + 12, y + labelDy, color);
-        labelBox(ctx, `${layer.barNo} 右${rightLen}cmx${mid}`, Math.max(lapEndX + 18, x1 - 178), y + labelDy + hookDir * 11, color);
-        if (index === 0 && spanIndex === 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 58, color);
-        if (index === 0 && spanIndex === spanCount - 1) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 58, color);
+        labelBox(ctx, `${layer.barNo} 左${leftLen}cmx${mid}`, x0 + 12, y + labelDy, color, isTop);
+        labelBox(ctx, `${layer.barNo} 右${rightLen}cmx${mid}`, Math.max(lapEndX + 18, x1 - 178), y + labelDy + hookDir * 11, color, isTop);
+        if (index === 0 && spanIndex === 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 58, color, isTop);
+        if (index === 0 && spanIndex === spanCount - 1) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 58, color, isTop);
       } else {
         drawAnchoredBar(ctx, x0, x1, y, hookDir, color, 4, spanIndex === 0, spanIndex === spanCount - 1, leftColumnW, rightColumnW);
-        labelBox(ctx, `${layer.barNo} ${roundUpCm(number(beam.span, 0) + leftAnchor + rightAnchor)}cmx${mid}`, x0 + 12, y + labelDy, color);
+        labelBox(ctx, `${layer.barNo} ${roundUpCm(number(beam.span, 0) + leftAnchor + rightAnchor)}cmx${mid}`, x0 + 12, y + labelDy, color, isTop);
         detailText(ctx, `蝥x${mid}`, x0 + (x1 - x0) / 2 - 18, y + (isTop ? 20 : -12), 12, "#182026");
       }
     }
@@ -1327,14 +1393,14 @@ function drawLayerGroup(ctx, beam, key, face, x0, x1, yBase, scale, spanIndex, s
     if (leftExtra > 0) {
       const lx = x0 + number(layer.leftCutoff, 0) * scale;
       drawAnchoredBar(ctx, x0, lx, y + hookDir * 20, hookDir, color, 3, true, false, leftColumnW, 0);
-      labelBox(ctx, `${layer.barNo} ${roundUpCm(leftAnchor + number(layer.leftCutoff, 0))}cmx${leftExtra}`, x0 + 8, y + hookDir * 44, color);
-      if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 76, color);
+      labelBox(ctx, `${layer.barNo} ${roundUpCm(leftAnchor + number(layer.leftCutoff, 0))}cmx${leftExtra}`, x0 + 8, y + hookDir * 44, color, isTop);
+      if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x0 - Math.max(20, leftColumnW * 0.65) + 4, y + hookDir * 76, color, isTop);
     }
     if (rightExtra > 0) {
       const rx = x1 - number(layer.rightCutoff, 0) * scale;
       drawAnchoredBar(ctx, rx, x1, y + hookDir * 20, hookDir, color, 3, false, true, 0, rightColumnW);
-      labelBox(ctx, `${layer.barNo} ${roundUpCm(rightAnchor + number(layer.rightCutoff, 0))}cmx${rightExtra}`, Math.max(rx + 8, x1 - 152), y + hookDir * 44, color);
-      if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 76, color);
+      labelBox(ctx, `${layer.barNo} ${roundUpCm(rightAnchor + number(layer.rightCutoff, 0))}cmx${rightExtra}`, Math.max(rx + 8, x1 - 152), y + hookDir * 44, color, isTop);
+      if (index === 0 && mid <= 0) labelBox(ctx, `A1=${a1}cm`, x1 + Math.max(20, rightColumnW * 0.28), y + hookDir * 76, color, isTop);
     }
   });
 }
@@ -1358,10 +1424,32 @@ function drawLapHandle(ctx, beam, x, y, lap, isTop, ratioKey) {
   }
 }
 
-function labelBox(ctx, text, x, y, color) {
+function labelBox(ctx, text, x, y, color, isTop = null) {
   ctx.save();
-  ctx.font = "700 14px Microsoft JhengHei";
-  const width = ctx.measureText(text).width + 8;
+  ctx.font = "700 13px 'Segoe UI', 'Microsoft JhengHei', sans-serif";
+  const width = ctx.measureText(text).width + 16;
+  if (typeof isTop === "boolean") {
+    const leadDir = isTop ? -1 : 1;
+    const leadY = y + leadDir * 38;
+    const offsetX = 20;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + offsetX / 2, y + leadDir * 20);
+    ctx.lineTo(x + offsetX, leadY);
+    ctx.lineTo(x + offsetX + 10, leadY);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = document.body.dataset.theme === "dark" ? "#2d3a46" : "rgba(255, 255, 255, 0.95)";
+    ctx.beginPath();
+    ctx.roundRect(x + offsetX + 10, leadY - 14, width, 24, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = document.body.dataset.theme === "dark" ? "#fff" : color;
+    ctx.fillText(text, x + offsetX + 18, leadY + 3);
+    ctx.restore();
+    return;
+  }
   ctx.fillStyle = "rgba(255,255,255,0.86)";
   ctx.fillRect(x - 3, y - 16, width, 20);
   ctx.fillStyle = color;
@@ -1786,6 +1874,30 @@ function renderLapTable() {
   });
 }
 
+function renderFormulaConfig() {
+  const map = {
+    cfg_alpha: "alpha",
+    cfg_beta: "beta",
+    cfg_gamma: "gamma",
+    cfg_lambda: "lambda",
+    cfg_ldh_mult: "ldhMultiplier",
+    cfg_weight: "weightFormula"
+  };
+  state.params.formula = { ...clone(defaults.params.formula), ...(state.params.formula || {}) };
+  Object.entries(map).forEach(([id, key]) => {
+    const input = document.querySelector(`#${id}`);
+    if (!input) return;
+    input.value = state.params.formula[key];
+    input.oninput = () => {
+      state.params.formula[key] = input.type === "number"
+        ? number(input.value, defaults.params.formula[key])
+        : input.value;
+      logChange("公式設定", `${key} = ${input.value}`);
+      update();
+    };
+  });
+}
+
 function saveProject() {
   localStorage.setItem("rebar-smart-project", JSON.stringify(state));
   logChange("專案儲存", "資料已儲存在本機瀏覽器");
@@ -1804,7 +1916,9 @@ function loadProject() {
     button.classList.toggle("active", button.dataset.component === state.component);
   });
   syncParamControls();
+  applyTheme();
   renderForm();
+  renderFormulaConfig();
   renderLapTable();
   renderBeamBench();
   logChange("專案載入", "資料已載入");
@@ -1854,7 +1968,9 @@ function logChange(source, detail) {
 window.addEventListener("resize", update);
 
 bindStaticControls();
+applyTheme();
 renderForm();
+renderFormulaConfig();
 renderLapTable();
 renderBeamBench();
 logChange("系統啟動", "梁筋撿料資料已初始化");

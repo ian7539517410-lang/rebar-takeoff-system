@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>新世代智慧鋼筋撿料系統</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">RC Rebar Automation</p>
+      <h1>新世代智慧鋼筋撿料系統</h1>
+    </div>
+    <div class="header-actions">
+      <button id="saveProject" class="tool-button" title="儲存目前專案">儲存</button>
+      <button id="loadProject" class="tool-button" title="載入上次儲存">載入</button>
+      <button id="exportCsv" class="primary-button" title="匯出 Excel 可讀 CSV">匯出料單</button>
+      <button id="printDrawings" class="tool-button" title="列印或輸出 PDF">PDF</button>
+    </div>
+  </header>
+
+  <main class="workspace beam-layout">
+    <aside class="side-panel">
+      <section class="panel-section legacy-panel">
+        <div class="section-title">
+          <h2>構件</h2>
+          <span id="syncState" class="status-pill ok">同步完成</span>
+        </div>
+        <div class="segmented" role="tablist" aria-label="構件類型">
+          <button class="segment active" data-component="beam">梁</button>
+          <button class="segment" data-component="column">柱</button>
+          <button class="segment" data-component="wall">牆板</button>
+        </div>
+      </section>
+
+      <section class="panel-section legacy-panel">
+        <div class="section-title">
+          <h2>構件資料</h2>
+          <span id="componentCode" class="muted">B1</span>
+        </div>
+        <div id="componentForm" class="form-grid"></div>
+      </section>
+
+      <section class="panel-section" id="beamBenchPanel">
+        <div class="section-title">
+          <h2>連續梁台</h2>
+          <span id="beamBenchStatus" class="status-pill ok">C-G-C 通過</span>
+        </div>
+        <div class="bench-row">
+          <select id="benchAddType" aria-label="新增類型">
+            <option value="column">柱</option>
+            <option value="beam">梁</option>
+          </select>
+          <select id="benchComponentSelect" aria-label="構件清單"></select>
+          <button id="appendBenchItem" class="tool-button">加入</button>
+        </div>
+        <div class="bench-row">
+          <button id="quickAddColumn" class="tool-button">新增柱</button>
+          <button id="quickAddBeam" class="tool-button">新增梁</button>
+          <button id="removeBenchLast" class="tool-button">退回</button>
+        </div>
+        <div id="beamBenchSequence" class="sequence-strip"></div>
+        <div id="benchColumnEditor" class="bench-editor"></div>
+        <label>編輯梁段
+          <select id="benchBeamSelect"></select>
+        </label>
+        <div id="benchBeamEditor" class="bench-editor"></div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-title">
+          <h2>計算參數</h2>
+          <button id="resetParams" class="text-button">還原預設</button>
+        </div>
+        <div class="form-grid compact">
+          <label>f'c (MPa)<input id="fc" type="number" min="14" step="1"></label>
+          <label>fy (MPa)<input id="fy" type="number" min="280" step="10"></label>
+          <label>長度歸整 (cm)<input id="rounding" type="number" min="1" step="1"></label>
+          <label>頂層筋係數<input id="topFactor" type="number" min="1" step="0.05"></label>
+          <label>Ld 基準係數 (db)<input id="ldFactor" type="number" min="10" step="1"></label>
+          <label>乙級搭接係數<input id="classBFactor" type="number" min="1" step="0.05"></label>
+          <label>續接制度
+            <select id="spliceMode">
+              <option value="each">每層續接</option>
+              <option value="alternate">隔層續接</option>
+            </select>
+          </label>
+          <label>警示距樓版 (cm)<input id="floorWarning" type="number" min="0" step="1"></label>
+        </div>
+      </section>
+    </aside>
+
+    <section class="drawing-area">
+      <div class="summary-strip">
+        <div>
+          <span class="metric-label">上層搭接/續接</span>
+          <strong id="ldValue">-</strong>
+        </div>
+        <div>
+          <span class="metric-label">下層搭接/續接</span>
+          <strong id="lsValue">-</strong>
+        </div>
+        <div>
+          <span class="metric-label">總長度</span>
+          <strong id="totalLength">-</strong>
+        </div>
+        <div>
+          <span class="metric-label">總重量</span>
+          <strong id="totalWeight">-</strong>
+        </div>
+        <div>
+          <span class="metric-label">規範檢核</span>
+          <strong id="checkState" class="state-ok">通過</strong>
+        </div>
+      </div>
+
+      <div class="canvas-grid">
+        <section class="canvas-panel large view-panel active" data-view-panel="2d">
+          <div class="canvas-heading">
+            <h2>2D 施工圖說</h2>
+            <div class="view-toggle" role="tablist" aria-label="圖面切換">
+              <button class="segment active" data-view-toggle="2d">2D</button>
+              <button class="segment" data-view-toggle="3d">3D</button>
+            </div>
+          </div>
+          <canvas id="drawing2d" width="1200" height="620"></canvas>
+        </section>
+        <section class="canvas-panel view-panel" data-view-panel="3d">
+          <div class="canvas-heading">
+            <h2>局部 3D 智慧編輯</h2>
+            <div class="view-toggle" role="tablist" aria-label="圖面切換">
+              <button class="segment" data-view-toggle="2d">2D</button>
+              <button class="segment active" data-view-toggle="3d">3D</button>
+            </div>
+          </div>
+          <canvas id="drawing3d" width="720" height="620"></canvas>
+        </section>
+      </div>
+
+      <div class="bottom-grid">
+        <section class="data-panel legacy-panel">
+          <div class="section-title">
+            <h2>圖料一對一料單</h2>
+            <span class="muted">CSV 可由 Excel 開啟</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>序號</th>
+                  <th>標記</th>
+                  <th>號數</th>
+                  <th>支數</th>
+                  <th>單支長度</th>
+                  <th>總長度</th>
+                  <th>重量</th>
+                  <th>檢核</th>
+                </tr>
+              </thead>
+              <tbody id="barList"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="data-panel">
+          <div class="section-title">
+            <h2>修改紀錄</h2>
+            <button id="clearLog" class="text-button">清除</button>
+          </div>
+          <ol id="changeLog" class="change-log"></ol>
+        </section>
+      </div>
+
+      <section class="data-panel bench-output">
+        <div class="section-title">
+          <h2>連續梁台料單</h2>
+          <span id="beamBenchSummary" class="muted">自動拆解各跨主筋、箍筋與腰筋</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>梁台序號</th>
+                <th>梁段</th>
+                <th>標記</th>
+                <th>號數</th>
+                <th>支數</th>
+                <th>單支長度</th>
+                <th>總長度</th>
+                <th>重量</th>
+                <th>備註</th>
+              </tr>
+            </thead>
+            <tbody id="beamBenchList"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="lapTableDialog">
+    <form method="dialog" class="dialog-body">
+      <div class="section-title">
+        <h2>專案搭接表</h2>
+        <button class="tool-button">關閉</button>
+      </div>
+      <p class="muted">留空代表使用動態公式。輸入值會以公分為單位覆寫指定號數的甲級或乙級搭接長度。</p>
+      <div id="lapTable" class="lap-table"></div>
+    </form>
+  </dialog>
+
+  <button id="openLapTable" class="floating-button">專案搭接表</button>
+  <script src="app.js"></script>
+</body>
+</html>

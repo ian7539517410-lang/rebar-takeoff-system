@@ -1,0 +1,12 @@
+# Local generated artifacts
+output/
+tmp/
+.playwright-cli/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# Dependency folders if added later
+node_modules/
